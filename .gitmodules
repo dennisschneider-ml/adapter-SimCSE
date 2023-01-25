@@ -1,0 +1,3 @@
+[submodule "K-Adapter"]
+	path = K-Adapter
+	url = https://github.com/dennisschneider-ml/K-Adapter
