@@ -6,6 +6,7 @@ import torch.distributed as dist
 import transformers
 from transformers import RobertaTokenizer
 from transformers.models.roberta.modeling_roberta import RobertaPreTrainedModel, RobertaModel, RobertaLMHead
+from transformers import RobertaAdapterModel
 from transformers.models.bert.modeling_bert import BertPreTrainedModel, BertModel, BertLMPredictionHead
 from transformers.activations import gelu
 from transformers.file_utils import (
@@ -61,8 +62,9 @@ class Pooler(nn.Module):
         assert self.pooler_type in ["cls", "cls_before_pooler", "avg", "avg_top2", "avg_first_last"], "unrecognized pooling type %s" % self.pooler_type
 
     def forward(self, attention_mask, outputs):
-        last_hidden = outputs.last_hidden_state
-        pooler_output = outputs.pooler_output
+        # last_hidden = outputs.last_hidden_state
+        # pooler_output = outputs.pooler_output
+        last_hidden = outputs.hidden_states[-1]
         hidden_states = outputs.hidden_states
 
         if self.pooler_type in ['cls_before_pooler', 'cls']:
@@ -264,10 +266,12 @@ def sentemb_forward(
 
     if not return_dict:
         return (outputs[0], pooler_output) + outputs[2:]
-
+    
+    last_hidden_state=outputs.hidden_states[-1]
+    
     return BaseModelOutputWithPoolingAndCrossAttentions(
         pooler_output=pooler_output,
-        last_hidden_state=outputs.last_hidden_state,
+        last_hidden_state=last_hidden_state,
         hidden_states=outputs.hidden_states,
     )
 
@@ -336,13 +340,13 @@ class RobertaForCL(RobertaPreTrainedModel):
 
     def __init__(self, config, *model_args, **model_kargs):
         super().__init__(config)
-        self.model_args = model_kargs["model_args"]
+        if "model_args" in model_kargs:
+            self.model_args = model_kargs["model_args"]
         self.roberta = RobertaModel(config, add_pooling_layer=False)
-
-        if self.model_args.do_mlm:
-            self.lm_head = RobertaLMHead(config)
-
-        cl_init(self, config)
+        if "model_args" in model_kargs:
+            if self.model_args.do_mlm:
+                self.lm_head = RobertaLMHead(config)
+            cl_init(self, config)
 
     def forward(self,
         input_ids=None,
