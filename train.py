@@ -55,6 +55,21 @@ class ModelArguments:
             "Don't set if you want to train a model from scratch."
         },
     )
+    adapter_model: Optional[str] = field(
+            default=None,
+            metadata={
+                "help": "The adapter pretraining to use"
+        },
+    )
+    adapter_config: str = field(
+            default=None,
+            metadata={
+                "help": "The adapter architecture to use (Houlsby, Fischer, ...)"
+        },
+    )
+    freeze_adapter: bool = field(
+            default=False
+            )
     model_type: Optional[str] = field(
         default=None,
         metadata={"help": "If training from scratch, pass a model type from the list: " + ", ".join(MODEL_TYPES)},
@@ -348,7 +363,8 @@ def main():
         )
 
     if model_args.model_name_or_path:
-        if 'roberta' in model_args.model_name_or_path:
+        if model_args.adapter_model:
+            print("Loading only the Basemodel and the pretrained Adapter")
             model = RobertaForCL.from_pretrained(
                 model_args.model_name_or_path,
                 from_tf=bool(".ckpt" in model_args.model_name_or_path),
@@ -358,26 +374,60 @@ def main():
                 use_auth_token=True if model_args.use_auth_token else None,
                 model_args=model_args                  
             )
-        elif 'bert' in model_args.model_name_or_path:
-            model = BertForCL.from_pretrained(
-                model_args.model_name_or_path,
-                from_tf=bool(".ckpt" in model_args.model_name_or_path),
-                config=config,
-                cache_dir=model_args.cache_dir,
-                revision=model_args.model_revision,
-                use_auth_token=True if model_args.use_auth_token else None,
-                model_args=model_args
-            )
-            if model_args.do_mlm:
-                pretrained_model = BertForPreTraining.from_pretrained(model_args.model_name_or_path)
-                model.lm_head.load_state_dict(pretrained_model.cls.predictions.state_dict())
+            adapter_name = model.roberta.load_adapter(model_args.adapter_model, model_name="roberta-large", config=model_args.adapter_config)
+            model.roberta.set_active_adapters(adapter_name)
+            model.roberta.train_adapter(adapter_name)
+
         else:
-            raise NotImplementedError
+            try:
+                model = RobertaForCL.from_pretrained(
+                    model_args.model_name_or_path,
+                    from_tf=bool(".ckpt" in model_args.model_name_or_path),
+                    config=config,
+                    cache_dir=model_args.cache_dir,
+                    revision=model_args.model_revision,
+                    use_auth_token=True if model_args.use_auth_token else None,
+                    model_args=model_args                  
+                )
+                model.roberta.set_active_adapters("sts-b")
+            except:
+                logger.warn("Not an adapter-model!")
+                if 'roberta' in model_args.model_name_or_path:
+                    model = RobertaForCL.from_pretrained(
+                        model_args.model_name_or_path,
+                        from_tf=bool(".ckpt" in model_args.model_name_or_path),
+                        config=config,
+                        cache_dir=model_args.cache_dir,
+                        revision=model_args.model_revision,
+                        use_auth_token=True if model_args.use_auth_token else None,
+                        model_args=model_args,
+                    )
+                elif 'bert' in model_args.model_name_or_path:
+                    model = BertForCL.from_pretrained(
+                        model_args.model_name_or_path,
+                        from_tf=bool(".ckpt" in model_args.model_name_or_path),
+                        config=config,
+                        cache_dir=model_args.cache_dir,
+                        revision=model_args.model_revision,
+                        use_auth_token=True if model_args.use_auth_token else None,
+                        model_args=model_args
+                    )
+                    if model_args.do_mlm:
+                        pretrained_model = BertForPreTraining.from_pretrained(model_args.model_name_or_path)
+                        model.lm_head.load_state_dict(pretrained_model.cls.predictions.state_dict())
+                else:
+                    raise NotImplementedError
     else:
         raise NotImplementedError
         logger.info("Training new model from scratch")
         model = AutoModelForMaskedLM.from_config(config)
+    if model_args.freeze_adapter:
+        logger.info("Freezing adapter...")
+        for name, param in model.named_parameters():
+            if adapter_name in name:
+                param.requires_grad = False
 
+    logger.info("#Parameters:", sum(p.numel() for p in model.parameters() if p.requires_grad))
     model.resize_token_embeddings(len(tokenizer))
 
     # Prepare features
@@ -548,7 +598,18 @@ def main():
             else None
         )
         train_result = trainer.train(model_path=model_path)
-        trainer.save_model()  # Saves the tokenizer too for easy upload
+        # TODOO trainer.save_model()  # Saves the tokenizer too for easy upload
+        # trainer.save_model should also work now, I guess ...
+        if model_args.adapter_model:
+            model.save_pretrained(training_args.output_dir)
+            print("Saved these basemodel parameters:")
+            print(next(model.parameters()))
+            print("Saved these adapter-parameters:")
+            print(next(p_ for i, p_ in enumerate(model.parameters()) if i == 16))
+        else:
+            trainer.save_model()
+        print("Skipping evaluation of model ...")
+        exit()
 
         output_train_file = os.path.join(training_args.output_dir, "train_results.txt")
         if trainer.is_world_process_zero():

@@ -7,6 +7,7 @@ from prettytable import PrettyTable
 import torch
 import transformers
 from transformers import AutoModel, AutoTokenizer
+from simcse.models import RobertaForCL
 
 # Set up logger
 logging.basicConfig(format='%(asctime)s : %(message)s', level=logging.DEBUG)
@@ -29,6 +30,10 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model_name_or_path", type=str, 
             help="Transformers' model name or path")
+    parser.add_argument("--adapter_model", type=str,
+            help="Adapter model or path")
+    parser.add_argument("--adapter_config", type=str,
+            help="Adapter config (houlsby/fischer)")
     parser.add_argument("--pooler", type=str, 
             choices=['cls', 'cls_before_pooler', 'avg', 'avg_top2', 'avg_first_last'], 
             default='cls', 
@@ -50,10 +55,21 @@ def main():
     args = parser.parse_args()
     
     # Load transformers' model checkpoint
-    model = AutoModel.from_pretrained(args.model_name_or_path)
+    if args.adapter_model:
+        model = RobertaForCL.from_pretrained(args.model_name_or_path)
+        adapter_name = model.roberta.load_adapter(args.adapter_model, model_name="roberta-large", config=args.adapter_config)
+        model.roberta.set_active_adapters(adapter_name)
+    else:
+        #try:
+        #    model = RobertaForCL.from_pretrained(args.model_name_or_path)
+        #except:
+        #    print("ERROR: Not an adapter-model!")
+        model = AutoModel.from_pretrained(args.model_name_or_path)
+        model.set_active_adapters("sts-b")
     tokenizer = AutoTokenizer.from_pretrained(args.model_name_or_path)
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     model = model.to(device)
+    print(next(model.parameters()))
     
     # Set up the tasks
     if args.task_set == 'sts':
@@ -112,8 +128,10 @@ def main():
         # Get raw embeddings
         with torch.no_grad():
             outputs = model(**batch, output_hidden_states=True, return_dict=True)
-            last_hidden = outputs.last_hidden_state
-            pooler_output = outputs.pooler_output
+            # TODOO
+            # last_hidden = outputs.last_hidden_state
+            last_hidden = outputs.hidden_states[-1]
+            # pooler_output = outputs.pooler_output
             hidden_states = outputs.hidden_states
 
         # Apply different poolers
